@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 # -----------------------------------------------------------------------------
-#  PVE 一键扩容脚本  (v7)   ——  块存储 (LVM‑Thin) & “pvedisk” 快速启动
+#  PVE 一键扩容脚本  (v7.1)   ——  块存储 (LVM‑Thin) & “pvedisk” 快速启动
 # -----------------------------------------------------------------------------
 #  新增特性
-#  ✦  `pvedisk install`  —— 把脚本自复制到 /usr/local/bin/pvedisk 并赋可执行权；
+#  ✦  `pvedisk install`  —— 把脚本复制到 /usr/local/bin/pvedisk 并赋可执行权；
 #                           之后任何位置直接敲 `pvedisk` 即可运行主逻辑。
 #  ✦  `pvedisk --help`    —— 简易帮助信息。
-#  ✦  其余逻辑沿用 v6：检测/清空/初始化 GPT + LVM‑Thin + pvesm 注册。
+#  ✦  若系统无 sudo (如默认 root 环境)，自动用普通 install 命令，不再报错。
 # -----------------------------------------------------------------------------
 #  安装一次：
-#     wget -O pvedisk https://raw.githubusercontent.com/<user>/pve-onekey/main/pve_lvm_add.sh
-#     sudo bash pvedisk install
+#     wget -O pvedisk https://raw.githubusercontent.com/<user>/pve_add_lvm/main/pvedisk.sh
+#     bash pvedisk install         # root 环境直接 bash，非 root 需 sudo bash
 #  以后使用：
-#     sudo pvedisk        # 跑交互式初始化流程
+#     pvedisk                      # root 环境直接 pvedisk，非 root 需 sudo pvedisk
 # -----------------------------------------------------------------------------
 set -euo pipefail
 shopt -s nocasematch
@@ -29,15 +29,19 @@ fi
 
 if [[ "${1:-}" == "install" ]]; then
   DEST="/usr/local/bin/pvedisk"
-  sudo install -m 755 "$(readlink -f "$0")" "$DEST"
-  echo -e "\e[1;32m[INFO]\e[0m 已安装为 $DEST\n以后可直接运行: sudo pvedisk";
+  if command -v sudo >/dev/null 2>&1; then
+    sudo install -m 755 "$(readlink -f "$0")" "$DEST"
+  else
+    install -m 755 "$(readlink -f "$0")" "$DEST"
+  fi
+  echo -e "\e[1;32m[INFO]\e[0m 已安装为 $DEST\n以后可直接运行: pvedisk (或 sudo pvedisk)"
   exit 0
 fi
 
 ###########################################################
 # 1. 权限 & 依赖检查
 ###########################################################
-[[ $EUID -ne 0 ]] && { echo -e "\e[1;31m[ERR ]\e[0m 需要 root，试试 sudo"; exit 1; }
+[[ $EUID -ne 0 ]] && { echo -e "\e[1;31m[ERR ]\e[0m 需要 root，请使用 sudo 或先 su -"; exit 1; }
 for cmd in parted pvcreate vgcreate lvcreate pvesm wipefs dmsetup lsblk partprobe findmnt; do
   command -v "$cmd" >/dev/null || { echo "缺少依赖 $cmd (apt install $cmd)"; exit 1; }
 done
@@ -81,15 +85,11 @@ if [[ $HAS_SIG == "yes" ]]; then
     n|no)  warn "开始清空 $DEV…";;
     *)     error "请输入 yes 或 no";;
   esac
-  # 3.1 卸载
   for mp in $(findmnt -rn -S "$DEV*" -o TARGET); do warn "卸载 $mp"; umount -lf "$mp" || true; done
-  # 3.2 关闭 VG
   if pvs | grep -q "^ *$DEV"; then
     for vg in $(pvs --noheadings -o vg_name "$DEV" | xargs); do warn "停用 VG $vg"; vgchange -an "$vg" || true; done
   fi
-  # 3.3 移除 device‑mapper
   dmsetup ls --target linear | awk '{print $1" "$2}' | grep "$DEV" | awk '{print $1}' | xargs -r dmsetup remove -f || true
-  # 3.4 抹签名
   wipefs -a "$DEV"; sgdisk --zap-all "$DEV" >/dev/null 2>&1 || true
   log "$DEV 已清空签名"
 fi
